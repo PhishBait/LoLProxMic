@@ -29,6 +29,9 @@ class MinimapReader:
         # name -> (cx, cy, size_px, score)
         self.last_detections: dict[str, tuple[int, int, int, float]] = {}
         self._scan_count = 0
+        # ally champion names (always minimap-visible); set by the agent
+        self.ally_names: set[str] = set()
+        self.frame_valid = True
 
     # -- region ----------------------------------------------------------
     def region(self) -> tuple[int, int, int, int]:
@@ -94,7 +97,8 @@ class MinimapReader:
             return self.positions
         frame = self._grab()
         fh, fw = frame.shape[:2]
-        threshold = self.cfg["match_threshold"]
+        acquire = self.cfg["match_threshold"]
+        track = self.cfg.get("track_threshold", acquire)
         units = self.cfg["map_units"]
         now = time.time()
 
@@ -123,9 +127,14 @@ class MinimapReader:
                                x0:min(fw, int(lx) + pad)]
                 roi_off = (x0, y0)
 
-            best = self._best_match(search, variants, threshold)
-            if best is None and roi_off != (0, 0):
-                best = self._best_match(frame, variants, threshold)
+            # ROI search of an already-tracked champ: lenient threshold.
+            # Fresh acquisition (full frame): strict threshold, so terrain
+            # noise can't fake a champion that's actually hidden in fog.
+            in_roi = roi_off != (0, 0) or search is not frame
+            best = self._best_match(search, variants,
+                                    track if in_roi else acquire)
+            if best is None and in_roi:
+                best = self._best_match(frame, variants, acquire)
                 roi_off = (0, 0)
             if best is not None:
                 score, px, py, sz = best
@@ -136,6 +145,7 @@ class MinimapReader:
         candidates.sort(key=lambda c: c[0], reverse=True)
         accepted: list[tuple[float, float, float]] = []  # (cx, cy, min_sep)
         detections: dict[str, tuple[int, int, int, float]] = {}
+        new_positions: dict[str, tuple[float, float, float]] = {}
         for score, name, cx, cy, sz in candidates:
             min_sep = sz * 0.6
             if any((cx - ax) ** 2 + (cy - ay) ** 2 < max(min_sep, asep) ** 2
@@ -145,9 +155,27 @@ class MinimapReader:
             detections[name] = (int(cx), int(cy), sz, score)
             x_units = (cx / fw) * units
             y_units = (1 - cy / fh) * units  # screen y-down -> map y-up
-            self.positions[name] = (x_units, y_units, now)
+            new_positions[name] = (x_units, y_units, now)
+
+        # Minimap-visible sanity check (see config: min_allies_visible).
+        allies_found = sum(1 for n in new_positions if n in self.ally_names)
+        need = min(self.cfg.get("min_allies_visible", 3),
+                   max(len(self.ally_names), 1))
+        self.frame_valid = not self.ally_names or allies_found >= need
         self.last_frame = frame
-        self.last_detections = detections
+        if self.frame_valid:
+            self.positions.update(new_positions)
+            self.last_detections = detections
+        else:
+            # Minimap covered: drop this frame's matches and freeze the
+            # clock on positions that were fresh, so voice gains hold
+            # instead of everyone fading to silence while alt-tabbed.
+            self.last_detections = {}
+            cutoff = now - self.cfg["position_stale_secs"]
+            self.positions = {
+                n: (x, y, now if ts >= cutoff else ts)
+                for n, (x, y, ts) in self.positions.items()
+            }
         return self.positions
 
     def debug_jpeg(self, self_champion: str | None = None) -> bytes | None:

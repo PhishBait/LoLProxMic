@@ -313,6 +313,11 @@ function refreshVision() {
     info.textContent = "game found — preparing champion templates…";
     return;
   }
+  if (gameState.minimapVisible === false) {
+    info.textContent =
+      "minimap not visible (game covered/minimized?) — positions frozen";
+    return;
+  }
   const detected = gameState.players.filter((p) => p.pos);
   info.textContent =
     `tracking ${detected.length}/${gameState.players.length} champions` +

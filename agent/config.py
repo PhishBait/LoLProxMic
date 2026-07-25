@@ -39,11 +39,15 @@ DEFAULTS = {
     "poll_hz": 2,
 
     # Template matching. Icon diameter is searched as a fraction of the
-    # minimap width across this range. Raise threshold if you get phantom
-    # detections, lower it if champions go missing.
+    # minimap width across this range. Raise thresholds if you get phantom
+    # detections, lower them if champions go missing.
+    # Hysteresis: acquiring a champion needs match_threshold; keeping one
+    # already tracked only needs track_threshold (survives occlusion by
+    # pings, camera box, overlapping icons).
     "icon_scale_range": [0.06, 0.14],
     "icon_scale_steps": 9,
-    "match_threshold": 0.50,
+    "match_threshold": 0.62,
+    "track_threshold": 0.45,
 
     # Summoner's Rift is ~14870 game units across. Distances below are in
     # those units (attack ranges ~500-650, flash ~400, whole lane ~13000).
@@ -52,6 +56,12 @@ DEFAULTS = {
     # A detected position older than this many seconds counts as unknown
     # (e.g. enemy walked into fog of war).
     "position_stale_secs": 4.0,
+
+    # Sanity check: allies are ALWAYS on the minimap when it's visible.
+    # If fewer than this many allies match, the minimap is probably
+    # covered (alt-tabbed, another window on top) — discard the frame and
+    # freeze last known positions instead of hallucinating matches.
+    "min_allies_visible": 3,
 }
 
 

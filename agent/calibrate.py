@@ -22,13 +22,20 @@ def main():
         shot = sct.grab(mon)
     frame = np.ascontiguousarray(np.asarray(shot)[:, :, :3])
 
+    # Show a scaled-down preview so the whole screenshot fits on screen —
+    # at 1:1 the bottom (where the minimap lives!) hides behind the taskbar.
+    fh, fw = frame.shape[:2]
+    scale = min(0.85 * mon["height"] / fh, 0.95 * mon["width"] / fw, 1.0)
+    preview = cv2.resize(frame, (int(fw * scale), int(fh * scale)),
+                         interpolation=cv2.INTER_AREA)
+
     print("Drag a box around the minimap, then press ENTER or SPACE.")
     print("(Press C to cancel.)")
-    r = cv2.selectROI("Select minimap - ENTER to confirm", frame,
-                      showCrosshair=True)
+    win = "Select minimap - ENTER to confirm"
+    r = cv2.selectROI(win, preview, showCrosshair=True)
     cv2.destroyAllWindows()
 
-    x, y, w, h = (int(v) for v in r)
+    x, y, w, h = (int(v / scale) for v in r)
     if w < 40 or h < 40:
         print("Selection too small (or cancelled); nothing saved.")
         return

@@ -54,6 +54,7 @@ class AgentState:
                 "inGame": self.in_game,
                 "selfRiotId": self.self_riot_id,
                 "cvReady": self.reader.ready,
+                "minimapVisible": self.reader.frame_valid,
                 "players": players,
                 "maxUnits": self.cfg["map_units"],
                 "ts": time.time(),
@@ -80,6 +81,17 @@ class AgentState:
                                     for p in raw]
                     if not self.self_riot_id:
                         self.self_riot_id = liveclient.active_riot_id()
+                    # allies (self team) are always minimap-visible; the
+                    # reader uses this to detect a covered minimap
+                    if self.self_riot_id:
+                        fold = self.self_riot_id.lower()
+                        my_team = next(
+                            (p["team"] for p in self.players
+                             if p["riotId"].lower() == fold), None)
+                        if my_team:
+                            self.reader.ally_names = {
+                                p["championName"] for p in self.players
+                                if p["team"] == my_team}
             self._ensure_templates()
             time.sleep(interval)
 
