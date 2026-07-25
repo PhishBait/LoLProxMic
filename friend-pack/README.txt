@@ -33,8 +33,8 @@ EVERY SESSION
 
 SETTINGS (in the page, they save automatically)
 -----------------------------------------------
-- Hearing range: how far voices carry. The text under the slider
-  tells you what it means ("one screen away" etc.)
+- Voices carry about one screen. This is fixed and the same for
+  everyone, so hearing is always fair both ways.
 - Dead players: "silenced until respawn" or "can still talk" - pick
   as a group so it's fair
 - Who can hear you: everyone close enough, or teammates only

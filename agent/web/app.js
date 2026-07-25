@@ -416,26 +416,16 @@ setInterval(() => {
 }, 150);
 
 // ---- wire up ---------------------------------------------------------------
-function describeReach(units) {
-  if (units <= 1100) return "whisper — practically touching";
-  if (units <= 2300) return "≈ one screen away";
-  if (units <= 3800) return "a couple of screens";
-  return "half the map — hard to escape";
-}
-
-function applyReach(units) {
-  Spatial.maxDistance = units;
-  $("maxDistVal").textContent = units;
-  $("reachDesc").textContent = describeReach(units);
-  updateAllPeerAudio();
-}
+// Hearing range is deliberately NOT user-adjustable: everyone shares the
+// same constant so hearing is always symmetric. Change it here (and tell
+// your whole group) if you must.
+const HEARING_RANGE = 1800; // ≈ one screen
 
 function saveTuning() {
   localStorage.setItem("proxchat.tuning", JSON.stringify({
     mode: settings.mode,
     deathMode: settings.deathMode,
     masterVol: Math.round(settings.masterVolume * 100),
-    maxDist: Spatial.maxDistance,
   }));
 }
 
@@ -461,8 +451,7 @@ window.addEventListener("DOMContentLoaded", () => {
   $("deathMode").value = settings.deathMode;
   $("masterVol").value = saved.masterVol ?? 100;
   $("masterVolVal").textContent = `${saved.masterVol ?? 100}%`;
-  $("maxDist").value = saved.maxDist ?? 1800;
-  applyReach(saved.maxDist ?? 1800);
+  Spatial.maxDistance = HEARING_RANGE;
 
   $("connectBtn").addEventListener("click", () => {
     if (sigWS && sigWS.readyState === WebSocket.OPEN) disconnect();
@@ -479,11 +468,6 @@ window.addEventListener("DOMContentLoaded", () => {
     settings.deathMode = e.target.value;
     saveTuning();
     updateAllPeerAudio();
-  });
-
-  $("maxDist").addEventListener("input", (e) => {
-    applyReach(Number(e.target.value));
-    saveTuning();
   });
 
   $("masterVol").addEventListener("input", (e) => {
