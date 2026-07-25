@@ -138,9 +138,14 @@
     color: var(--text-dim); margin-top: 6px;
   }
 
-  .tuning { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .tuning { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .tuning .t-full { grid-column: 1 / -1; }
   .tuning label span b { color: var(--gold); font-family: var(--font-mono); font-weight: 500; }
   input[type=range] { padding: 0; accent-color: #c8aa6e; background: transparent; border: 0; }
+  .reach-desc {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--teal); margin-top: 2px;
+  }
 
   footer {
     margin-top: 22px; padding-top: 10px; border-top: 1px solid var(--line);
@@ -191,16 +196,23 @@
     </details>
 
     <div class="tuning">
-      <label><span>Mode</span>
+      <label><span>Who can hear you</span>
         <select id="mode">
-          <option value="distance">distance (all)</option>
-          <option value="team">team only</option>
+          <option value="distance">anyone close enough</option>
+          <option value="team">teammates only</option>
         </select>
       </label>
-      <label><span>Hearing range <b id="maxDistVal">1800</b></span>
-        <input id="maxDist" type="range" min="600" max="6000" step="100" value="1800">
+      <label><span>Dead players</span>
+        <select id="deathMode">
+          <option value="classic">silenced until respawn</option>
+          <option value="open">can still talk</option>
+        </select>
       </label>
-      <label><span>Volume</span>
+      <label class="t-full"><span>Hearing range <b id="maxDistVal">1800</b></span>
+        <input id="maxDist" type="range" min="600" max="6000" step="100" value="1800">
+        <div id="reachDesc" class="reach-desc">≈ one screen away</div>
+      </label>
+      <label class="t-full"><span>Everyone's volume <b id="masterVolVal">100%</b></span>
         <input id="masterVol" type="range" min="0" max="100" value="100">
       </label>
     </div>

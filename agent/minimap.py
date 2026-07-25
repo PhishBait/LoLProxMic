@@ -31,6 +31,10 @@ class MinimapReader:
         self._scan_count = 0
         # ally champion names (always minimap-visible); set by the agent
         self.ally_names: set[str] = set()
+        # own champion: detected with a dedicated pass — League draws your
+        # icon topmost with a white ring, so it's never occluded on your
+        # own minimap even when icons pile up
+        self.self_name: str | None = None
         self.frame_valid = True
 
     # -- region ----------------------------------------------------------
@@ -157,6 +161,19 @@ class MinimapReader:
             y_units = (1 - cy / fh) * units  # screen y-down -> map y-up
             new_positions[name] = (x_units, y_units, now)
 
+        # Dedicated self pass, independent of the greedy dedup above: our
+        # own icon is always fully visible (drawn topmost, white ring), so
+        # its match must never be lost to an overlapping ally claiming the
+        # same spot. This is the position that gets broadcast to peers.
+        if self.self_name in self._scaled:
+            sb = self._best_self(frame)
+            if sb is not None:
+                score, cx, cy, sz = sb
+                detections[self.self_name] = (int(cx), int(cy), int(sz),
+                                              score)
+                new_positions[self.self_name] = (
+                    (cx / fw) * units, (1 - cy / fh) * units, now)
+
         # Minimap-visible sanity check (see config: min_allies_visible).
         allies_found = sum(1 for n in new_positions if n in self.ally_names)
         need = min(self.cfg.get("min_allies_visible", 3),
@@ -197,6 +214,48 @@ class MinimapReader:
         ok, buf = cv2.imencode(".jpg", img,
                                [cv2.IMWRITE_JPEG_QUALITY, 80])
         return buf.tobytes() if ok else None
+
+    def _ring_whiteness(self, frame: np.ndarray, cx: float, cy: float,
+                        r: float) -> float:
+        """0..1: how white the ring just outside radius r is. The local
+        player's minimap icon has a white border; allies/enemies have
+        colored ones."""
+        h, w = frame.shape[:2]
+        vals = []
+        for i in range(24):
+            a = 2 * np.pi * i / 24
+            x = int(cx + np.cos(a) * (r + 1))
+            y = int(cy + np.sin(a) * (r + 1))
+            if 0 <= x < w and 0 <= y < h:
+                b, g, rr = frame[y, x]
+                vals.append(min(int(b), int(g), int(rr)))  # white = all high
+        return (sum(vals) / len(vals)) / 255 if vals else 0.0
+
+    def _best_self(self, frame: np.ndarray):
+        """Best (score, cx, cy, size) for our own champion. Checks the top
+        few template peaks per scale and prefers the one with the whitest
+        ring, so a look-alike ally icon can't steal the match."""
+        variants = self._scaled.get(self.self_name, [])
+        floor = self.cfg.get("track_threshold", 0.45)
+        best = None  # (combined, score, cx, cy, sz)
+        for tpl in variants:
+            th, tw = tpl.shape[:2]
+            if th >= frame.shape[0] or tw >= frame.shape[1]:
+                continue
+            res = cv2.matchTemplate(frame, tpl, cv2.TM_CCOEFF_NORMED)
+            for _ in range(3):  # top 3 peaks at this scale
+                _, score, _, loc = cv2.minMaxLoc(res)
+                if score < floor:
+                    break
+                cx, cy = loc[0] + tw / 2, loc[1] + th / 2
+                ring = self._ring_whiteness(frame, cx, cy, tw / 2)
+                combined = score + 0.4 * ring
+                if best is None or combined > best[0]:
+                    best = (combined, score, cx, cy, tw)
+                # suppress this peak, find the next one
+                res[max(0, loc[1] - th // 2):loc[1] + th // 2 + 1,
+                    max(0, loc[0] - tw // 2):loc[0] + tw // 2 + 1] = -1
+        return None if best is None else best[1:]
 
     @staticmethod
     def _best_match(search: np.ndarray, variants: list[np.ndarray],

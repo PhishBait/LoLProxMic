@@ -20,13 +20,22 @@ let agentWS = null;
 let sigWS = null;
 let selfId = null;          // signaling id
 let micStream = null;
-let gameState = { inGame: false, players: [], selfRiotId: null, cvReady: false };
-// peerId -> { pc, riotId, polite, makingOffer, stream }
+let gameState = { inGame: false, players: [], selfRiotId: null,
+                  cvReady: false, selfPos: null };
+// peerId -> { pc, dc, riotId, polite, makingOffer, remote, lastNear }
 const rtcPeers = new Map();
+
+// Position reports: how we know where peers are.
+// Primary: each client detects only ITSELF (never occluded on your own
+// minimap) and broadcasts that over the data channel. Fallback: our own
+// CV's detection of their champion (old clients / channel not open yet).
+const REPORT_FRESH_MS = 3000; // peer self-report older than this: ignore
+const NEAR_GRACE_MS = 8000;   // lost someone who was close: hold, don't mute
 
 const $ = (id) => document.getElementById(id);
 const settings = {
-  mode: "distance",   // 'distance' | 'team'
+  mode: "distance",     // 'distance' | 'team'
+  deathMode: "classic", // 'classic' (dead are silenced) | 'open' (dead talk)
   masterVolume: 1,
 };
 
@@ -59,48 +68,101 @@ function findPlayer(riotId) {
     (p) => p.riotId.toLowerCase() === fold) || null;
 }
 
-/** Returns {gain, pan, distance|null, reason} for one peer. */
-function computeAudio(peerRiotId) {
+const clampPan = (v) => Math.max(-1, Math.min(1, v));
+
+/** Returns {gain, pan, distance|null, reason, live} for one peer. */
+function computeAudio(peer) {
   const FULL = { gain: 1, pan: 0, distance: null };
+  const now = performance.now();
 
   if (!gameState.inGame || !gameState.cvReady) {
     return { ...FULL, reason: "lobby" };  // out-of-game: everyone full volume
   }
   const me = findPlayer($("riotId").value || gameState.selfRiotId);
-  const them = findPlayer(peerRiotId);
-  if (!me || !them) return { ...FULL, reason: "not in this game" };
+  const them = findPlayer(peer.riotId);
+  const remote = peer.remote && now - peer.remote.ts < REPORT_FRESH_MS
+    ? peer.remote : null;
+  if (remote && remote.inGame === false) {
+    return { ...FULL, reason: "not in game yet" };
+  }
+  if (!me || (!them && !remote)) {
+    return { ...FULL, reason: "not in this game" };
+  }
 
-  if (settings.mode === "team" && me.team !== them.team) {
+  const theirTeam = remote?.team ?? them?.team;
+  if (settings.mode === "team" && theirTeam && me.team !== theirTeam) {
     return { gain: 0, pan: 0, distance: null, reason: "enemy (team mode)" };
   }
-  // Death rules: the dead hear everyone; the living don't hear the dead.
-  if (me.isDead) return { ...FULL, reason: "you are dead" };
-  if (them.isDead) {
-    return { gain: 0, pan: 0, distance: null, reason: "dead" };
+
+  const themDead = remote ? remote.dead : them?.isDead;
+  if (settings.deathMode === "classic") {
+    // the dead hear everyone; the living don't hear the dead
+    if (me.isDead) return { ...FULL, reason: "you are dead" };
+    if (themDead) {
+      return { gain: 0, pan: 0, distance: null, reason: "dead" };
+    }
+  } // 'open': death changes nothing, ghosts included
+
+  const myPos = gameState.selfPos || me.pos;
+  const theirPos = remote && remote.x != null ? remote : them?.pos;
+
+  if (myPos && theirPos) {
+    const dx = theirPos.x - myPos.x;
+    const dy = theirPos.y - myPos.y;
+    const d = Math.hypot(dx, dy);
+    const gain = Spatial.distanceToGain(d);
+    if (gain > 0.05) peer.lastNear = { d, dx, ts: now };
+    return {
+      gain,
+      pan: clampPan(dx / Spatial.maxDistance),
+      distance: d,
+      reason: null,
+      live: !!remote,   // position came from their own client
+    };
   }
 
-  if (!me.pos || !them.pos) {
-    // No position (fog of war / not detected yet) -> can't be "near".
-    return { gain: 0, pan: 0, distance: null, reason: "unseen" };
+  // No position for one of us. Fail toward "together", not "fog": if they
+  // were audibly close moments ago, hold that instead of going silent.
+  if (peer.lastNear && now - peer.lastNear.ts < NEAR_GRACE_MS) {
+    return {
+      gain: Spatial.distanceToGain(peer.lastNear.d),
+      pan: clampPan(peer.lastNear.dx / Spatial.maxDistance),
+      distance: peer.lastNear.d,
+      reason: "holding",
+    };
   }
-  const dx = them.pos.x - me.pos.x;
-  const dy = them.pos.y - me.pos.y;
-  const d = Math.hypot(dx, dy);
-  return {
-    gain: Spatial.distanceToGain(d),
-    pan: Math.max(-1, Math.min(1, dx / Spatial.maxDistance)),
-    distance: d,
-    reason: null,
-  };
+  return { gain: 0, pan: 0, distance: null, reason: "unseen" };
 }
 
 function updateAllPeerAudio() {
   for (const [peerId, peer] of rtcPeers) {
-    const a = computeAudio(peer.riotId);
+    const a = computeAudio(peer);
     peer.lastAudio = a;
     Spatial.setPeerAudio(peerId, a.gain * settings.masterVolume, a.pan);
   }
 }
+
+// Broadcast own position (from the agent's self-detection pass) to every
+// peer a few times a second over the unreliable data channel.
+function broadcastPos() {
+  if (rtcPeers.size === 0) return;
+  const me = findPlayer($("riotId").value || gameState.selfRiotId);
+  const inGame = gameState.inGame && gameState.cvReady;
+  const payload = JSON.stringify({
+    t: "pos",
+    inGame,
+    x: inGame && gameState.selfPos ? gameState.selfPos.x : null,
+    y: inGame && gameState.selfPos ? gameState.selfPos.y : null,
+    dead: me ? me.isDead : false,
+    team: me ? me.team : null,
+  });
+  for (const peer of rtcPeers.values()) {
+    if (peer.dc?.readyState === "open") {
+      try { peer.dc.send(payload); } catch {}
+    }
+  }
+}
+setInterval(broadcastPos, 250);
 
 // ---- signaling + WebRTC mesh -------------------------------------------------
 async function connect() {
@@ -175,8 +237,23 @@ async function createPeer(peerId, riotId, initiator) {
     pc, riotId, makingOffer: false,
     polite: selfId < peerId,   // deterministic role for glare handling
     lastAudio: null,
+    remote: null,              // their self-reported position
+    lastNear: null,
   };
   rtcPeers.set(peerId, peer);
+
+  // Position channel: negotiated with a fixed id so both sides create it
+  // symmetrically — no offer/answer choreography needed. Unreliable +
+  // unordered: a lost position report is obsolete anyway.
+  const dc = pc.createDataChannel("pos",
+    { negotiated: true, id: 0, ordered: false, maxRetransmits: 0 });
+  dc.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(ev.data);
+      if (m.t === "pos") peer.remote = { ...m, ts: performance.now() };
+    } catch {}
+  };
+  peer.dc = dc;
 
   for (const track of micStream.getTracks()) pc.addTrack(track, micStream);
 
@@ -276,14 +353,15 @@ function renderPeers() {
     const champ = player ? player.championName : "";
     const state = peer.pc.connectionState;
     const pct = Math.round(a.gain * 100);
+    const label = a.reason ? escapeHtml(a.reason) : fmtDistance(a.distance);
+    const src = a.live ? " ✓" : "";  // ✓ = position self-reported by them
     rows.push(`
       <div class="peer" data-peer="${peerId}">
         <div class="peer-head">
           <span class="speak" id="speak-${peerId}"></span>
           <span class="peer-name">${escapeHtml(peer.riotId || "?")}</span>
           <span class="peer-champ">${escapeHtml(champ)}</span>
-          <span class="peer-dist">${a.reason ? escapeHtml(a.reason)
-                                             : fmtDistance(a.distance)}</span>
+          <span class="peer-dist">${label}${src} · ${pct}%</span>
         </div>
         <div class="vol"><div class="vol-fill" style="width:${pct}%"></div></div>
         ${state !== "connected"
@@ -338,6 +416,29 @@ setInterval(() => {
 }, 150);
 
 // ---- wire up ---------------------------------------------------------------
+function describeReach(units) {
+  if (units <= 1100) return "whisper — practically touching";
+  if (units <= 2300) return "≈ one screen away";
+  if (units <= 3800) return "a couple of screens";
+  return "half the map — hard to escape";
+}
+
+function applyReach(units) {
+  Spatial.maxDistance = units;
+  $("maxDistVal").textContent = units;
+  $("reachDesc").textContent = describeReach(units);
+  updateAllPeerAudio();
+}
+
+function saveTuning() {
+  localStorage.setItem("proxchat.tuning", JSON.stringify({
+    mode: settings.mode,
+    deathMode: settings.deathMode,
+    masterVol: Math.round(settings.masterVolume * 100),
+    maxDist: Spatial.maxDistance,
+  }));
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   connectAgent();
 
@@ -348,6 +449,21 @@ window.addEventListener("DOMContentLoaded", () => {
       () => localStorage.setItem(`proxchat.${f}`, $(f).value));
   }
 
+  // restore tuning
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem("proxchat.tuning")) || {};
+  } catch {}
+  settings.mode = saved.mode || "distance";
+  settings.deathMode = saved.deathMode || "classic";
+  settings.masterVolume = (saved.masterVol ?? 100) / 100;
+  $("mode").value = settings.mode;
+  $("deathMode").value = settings.deathMode;
+  $("masterVol").value = saved.masterVol ?? 100;
+  $("masterVolVal").textContent = `${saved.masterVol ?? 100}%`;
+  $("maxDist").value = saved.maxDist ?? 1800;
+  applyReach(saved.maxDist ?? 1800);
+
   $("connectBtn").addEventListener("click", () => {
     if (sigWS && sigWS.readyState === WebSocket.OPEN) disconnect();
     else connect();
@@ -355,17 +471,25 @@ window.addEventListener("DOMContentLoaded", () => {
 
   $("mode").addEventListener("change", (e) => {
     settings.mode = e.target.value;
+    saveTuning();
+    updateAllPeerAudio();
+  });
+
+  $("deathMode").addEventListener("change", (e) => {
+    settings.deathMode = e.target.value;
+    saveTuning();
     updateAllPeerAudio();
   });
 
   $("maxDist").addEventListener("input", (e) => {
-    Spatial.maxDistance = Number(e.target.value);
-    $("maxDistVal").textContent = e.target.value;
-    updateAllPeerAudio();
+    applyReach(Number(e.target.value));
+    saveTuning();
   });
 
   $("masterVol").addEventListener("input", (e) => {
     settings.masterVolume = Number(e.target.value) / 100;
+    $("masterVolVal").textContent = `${e.target.value}%`;
+    saveTuning();
     updateAllPeerAudio();
   });
 });

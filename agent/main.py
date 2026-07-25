@@ -37,6 +37,7 @@ class AgentState:
         self.lock = threading.Lock()
         self.in_game = False
         self.self_riot_id: str | None = None
+        self.self_champion: str | None = None
         self.players: list[dict] = []           # normalized playerlist
         self.reader = MinimapReader(cfg)
         self._templates_for: frozenset[str] | None = None
@@ -55,6 +56,9 @@ class AgentState:
                 "selfRiotId": self.self_riot_id,
                 "cvReady": self.reader.ready,
                 "minimapVisible": self.reader.frame_valid,
+                # own position from the dedicated never-occluded self pass;
+                # the page broadcasts this to peers over WebRTC
+                "selfPos": positions.get(self.self_champion),
                 "players": players,
                 "maxUnits": self.cfg["map_units"],
                 "ts": time.time(),
@@ -85,13 +89,15 @@ class AgentState:
                     # reader uses this to detect a covered minimap
                     if self.self_riot_id:
                         fold = self.self_riot_id.lower()
-                        my_team = next(
-                            (p["team"] for p in self.players
+                        mine = next(
+                            (p for p in self.players
                              if p["riotId"].lower() == fold), None)
-                        if my_team:
+                        if mine:
+                            self.self_champion = mine["championName"]
+                            self.reader.self_name = self.self_champion
                             self.reader.ally_names = {
                                 p["championName"] for p in self.players
-                                if p["team"] == my_team}
+                                if p["team"] == mine["team"]}
             self._ensure_templates()
             time.sleep(interval)
 

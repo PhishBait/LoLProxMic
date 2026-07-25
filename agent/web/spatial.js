@@ -14,7 +14,10 @@ const Spatial = (() => {
   // Reference points: melee range ~125, most attack ranges 500-650,
   // Flash 400, one lane ~13000 end to end.
   let MAX_HEARING_DISTANCE = 1800; // beyond this: silence ("shouting range")
-  let REF_DISTANCE = 500;          // within this: full volume
+  // Within this: full volume. Kept proportional to the hearing range so
+  // one slider controls the whole feel — a short range still has a usable
+  // full-volume bubble, a long range doesn't go quiet at melee distance.
+  let REF_DISTANCE = 1800 * 0.28;
 
   /** Quadratic falloff between REF_DISTANCE and MAX_HEARING_DISTANCE. */
   function distanceToGain(d) {
@@ -106,7 +109,10 @@ const Spatial = (() => {
     ensureContext, addPeer, removePeer, setPeerAudio, peerLevel,
     distanceToGain, setMasterVolume,
     get maxDistance() { return MAX_HEARING_DISTANCE; },
-    set maxDistance(v) { MAX_HEARING_DISTANCE = v; },
+    set maxDistance(v) {
+      MAX_HEARING_DISTANCE = v;
+      REF_DISTANCE = v * 0.28;
+    },
     get refDistance() { return REF_DISTANCE; },
     set refDistance(v) { REF_DISTANCE = v; },
   };
