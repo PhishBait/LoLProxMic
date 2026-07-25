@@ -1,0 +1,5 @@
+aiohttp>=3.9
+mss>=9
+opencv-python>=4.9
+numpy>=1.26
+requests>=2.31

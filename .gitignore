@@ -1,0 +1,12 @@
+# build output
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# per-machine state
+agent/config.json
+config.json
+agent/cache/
+cache/
