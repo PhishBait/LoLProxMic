@@ -4,19 +4,20 @@ Relays WebRTC session descriptions and ICE candidates between clients in a
 room. Never sees or touches audio. One person hosts this (or deploys it to
 any free-tier Python host); everyone else just points their client at it.
 
+Built on aiohttp so plain HTTP requests (health checks, browsers) get a
+normal 200 while WebSocket clients get upgraded — cloud platforms need
+both to work.
+
 Usage:
     ROOM_PASSWORD=somepassword python server.py          # port 8080
     PORT=9000 ROOM_PASSWORD=somepassword python server.py
 """
 
-import asyncio
-import http
 import json
 import os
 import secrets
-import signal
 
-import websockets
+from aiohttp import web, WSMsgType
 
 PORT = int(os.environ.get("PORT", "8080"))
 ROOM_PASSWORD = os.environ.get("ROOM_PASSWORD", "")
@@ -34,8 +35,8 @@ class Client:
 
     async def send(self, msg: dict):
         try:
-            await self.ws.send(json.dumps(msg))
-        except websockets.ConnectionClosed:
+            await self.ws.send_str(json.dumps(msg))
+        except ConnectionError:
             pass
 
 
@@ -45,12 +46,22 @@ async def broadcast(room: str, msg: dict, exclude: str | None = None):
             await client.send(msg)
 
 
-async def handler(ws):
+async def handle(request):
+    if request.headers.get("Upgrade", "").lower() != "websocket":
+        return web.Response(
+            text="ProxChat signaling server. Connect with a ProxChat "
+                 "client.\n")
+
+    ws = web.WebSocketResponse(heartbeat=30)
+    await ws.prepare(request)
+
     client: Client | None = None
     try:
         async for raw in ws:
+            if raw.type != WSMsgType.TEXT:
+                continue
             try:
-                msg = json.loads(raw)
+                msg = json.loads(raw.data)
             except json.JSONDecodeError:
                 continue
 
@@ -58,10 +69,10 @@ async def handler(ws):
 
             if mtype == "join" and client is None:
                 if ROOM_PASSWORD and msg.get("password") != ROOM_PASSWORD:
-                    await ws.send(json.dumps(
+                    await ws.send_str(json.dumps(
                         {"type": "error", "message": "bad password"}))
                     await ws.close()
-                    return
+                    break
 
                 room = str(msg.get("room") or "default")[:64]
                 riot_id = str(msg.get("riotId") or "unknown")[:64]
@@ -92,8 +103,6 @@ async def handler(ws):
                         "data": msg.get("data"),
                     })
 
-    except websockets.ConnectionClosed:
-        pass
     finally:
         if client is not None:
             room = ROOMS.get(client.room, {})
@@ -103,33 +112,18 @@ async def handler(ws):
             await broadcast(client.room, {"type": "peer-left",
                                           "id": client.id})
             print(f"[-] {client.riot_id} ({client.id}) left '{client.room}'")
+    return ws
 
 
-def process_request(connection, request):
-    """Answer plain HTTP (health checks, browsers) with 200 instead of
-    stack-tracing; only WebSocket upgrade requests pass through."""
-    if "upgrade" not in request.headers.get("Connection", "").lower():
-        return connection.respond(http.HTTPStatus.OK,
-                                  "ProxChat signaling server. "
-                                  "Connect with a ProxChat client.\n")
-    return None
-
-
-async def main():
+def main():
     if not ROOM_PASSWORD:
         print("WARNING: no ROOM_PASSWORD set — anyone who finds this server "
               "can join.")
-    stop = asyncio.Future()
-    for sig in (getattr(signal, "SIGINT", None),):
-        pass  # windows: rely on KeyboardInterrupt
-    async with websockets.serve(handler, "0.0.0.0", PORT,
-                                process_request=process_request):
-        print(f"ProxChat signaling listening on :{PORT}")
-        await stop  # run forever
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", handle)
+    print(f"ProxChat signaling listening on :{PORT}")
+    web.run_app(app, host="0.0.0.0", port=PORT, print=None)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("bye")
+    main()

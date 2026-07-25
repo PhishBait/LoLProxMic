@@ -29,10 +29,9 @@ def run():
             os.environ["ROOM_PASSWORD"] = sys.argv[2]
         if len(sys.argv) > 3:
             os.environ["PORT"] = sys.argv[3]
-        import asyncio
         import server
         try:
-            asyncio.run(server.main())
+            server.main()
         except KeyboardInterrupt:
             print("bye")
 
