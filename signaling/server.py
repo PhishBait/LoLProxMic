@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+import http
 import json
 import os
 import secrets
@@ -104,6 +105,16 @@ async def handler(ws):
             print(f"[-] {client.riot_id} ({client.id}) left '{client.room}'")
 
 
+def process_request(connection, request):
+    """Answer plain HTTP (health checks, browsers) with 200 instead of
+    stack-tracing; only WebSocket upgrade requests pass through."""
+    if "upgrade" not in request.headers.get("Connection", "").lower():
+        return connection.respond(http.HTTPStatus.OK,
+                                  "ProxChat signaling server. "
+                                  "Connect with a ProxChat client.\n")
+    return None
+
+
 async def main():
     if not ROOM_PASSWORD:
         print("WARNING: no ROOM_PASSWORD set — anyone who finds this server "
@@ -111,7 +122,8 @@ async def main():
     stop = asyncio.Future()
     for sig in (getattr(signal, "SIGINT", None),):
         pass  # windows: rely on KeyboardInterrupt
-    async with websockets.serve(handler, "0.0.0.0", PORT):
+    async with websockets.serve(handler, "0.0.0.0", PORT,
+                                process_request=process_request):
         print(f"ProxChat signaling listening on :{PORT}")
         await stop  # run forever
 
